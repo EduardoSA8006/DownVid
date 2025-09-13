@@ -1,9 +1,22 @@
 import os
 import json
+import sys
 from typing import Dict, Any
 
-STATE_FILE = os.path.join(os.getcwd(), "app_state.json")
+def _state_dir() -> str:
+    # Escolhe um diretório de estado por SO
+    if sys.platform.startswith("win"):
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
+        return os.path.join(base, "DownVid")
+    elif sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+        return os.path.join(base, "DownVid")
+    else:
+        base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+        return os.path.join(base, "downvid")
 
+STATE_DIR = _state_dir()
+STATE_FILE = os.path.join(STATE_DIR, "app_state.json")
 
 def load_state() -> Dict[str, Any]:
     try:
@@ -14,9 +27,9 @@ def load_state() -> Dict[str, Any]:
     except Exception:
         return {}
 
-
 def save_state(state: Dict[str, Any]):
     try:
+        os.makedirs(STATE_DIR, exist_ok=True)
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
     except Exception:

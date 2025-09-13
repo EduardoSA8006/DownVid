@@ -168,7 +168,7 @@ class AddDownloadDialog(QDialog):
 
 
 class PreferencesDialog(QDialog):
-    def __init__(self, parent: Optional[Widget] = None, defaults: Optional[Dict] = None):
+    def __init__(self, parent: Optional[QWidget] = None, defaults: Optional[Dict] = None):
         super().__init__(parent)
         self.setWindowTitle("Preferências")
         self.defaults = defaults or get_default_download_dirs()

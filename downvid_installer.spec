@@ -9,9 +9,10 @@ block_cipher = None
 app_name = 'DownVid-Setup'
 entry_script = 'installer_downvid.py'
 
-# Dados (PySide6 styles/qml e afins)
+# Dados (PySide6 styles/qml e afins) + certifi (CA bundle)
 datas = []
 datas += collect_data_files('PySide6', include_py_files=False)
+datas += collect_data_files('certifi', include_py_files=False)
 
 a = Analysis(
     [entry_script],
