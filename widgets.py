@@ -1,19 +1,21 @@
 import os
 import sys
 import json
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
-from PySide6.QtCore import Qt, QSize, QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPlainTextEdit,
-    QPushButton, QFileDialog, QComboBox, QSpinBox, QTableWidget, QTableWidgetItem,
-    QProgressBar, QHeaderView, QMessageBox, QTabWidget, QListWidget, QListWidgetItem,
-    QAbstractItemView, QCheckBox, QLineEdit, QGroupBox, QFormLayout
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QPushButton, QComboBox, QSpinBox, QTableWidget, QTableWidgetItem,
+    QProgressBar, QHeaderView, QMessageBox, QListWidget, QListWidgetItem,
+    QAbstractItemView, QToolBar, QDockWidget, QFileDialog, QWidgetAction
 )
 
-from download_manager import DownloadManager, DownloadTask
-from storage import save_state, load_state
+from download_manager import DownloadManager
+from storage import save_state
+from dialogs import AddDownloadDialog, PreferencesDialog
+from paths import get_default_download_dirs, ensure_dirs_for_defaults, get_preferred_base_dir
 
 
 class MainWindow(QMainWindow):
@@ -24,7 +26,13 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1200, 760)
 
         self._task_row: Dict[str, int] = {}  # task_id -> row
-        self._completed: List[str] = []
+
+        # Defaults usados pelos diálogos (baseados em Documents/DownVid)
+        if previous_state and isinstance(previous_state.get("defaults"), dict):
+            self.defaults = previous_state["defaults"]
+        else:
+            self.defaults = get_default_download_dirs()
+        ensure_dirs_for_defaults(self.defaults)
 
         self._build_ui()
         self._connect_signals()
@@ -33,112 +41,13 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(50, lambda: self._restore_previous_state(previous_state))
 
     def _build_ui(self):
-        root = QWidget()
-        self.setCentralWidget(root)
-        main = QVBoxLayout(root)
-        main.setContentsMargins(12, 12, 12, 12)
-        main.setSpacing(10)
+        # Central: Tabela
+        central = QWidget()
+        self.setCentralWidget(central)
+        main = QVBoxLayout(central)
+        main.setContentsMargins(8, 8, 8, 8)
+        main.setSpacing(8)
 
-        # Linha 1 - Entrada e botões
-        controls = QHBoxLayout()
-
-        self.input_url = QPlainTextEdit()
-        self.input_url.setPlaceholderText(
-            "Cole aqui a URL do vídeo ou playlist do YouTube. "
-            "Você também pode colar várias URLs (1 por linha)."
-        )
-        self.input_url.setFixedHeight(80)
-
-        self.btn_add = QPushButton("Adicionar à fila")
-
-        self.combo_kind = QComboBox()
-        self.combo_kind.addItem("Vídeo", userData="video")
-        self.combo_kind.addItem("Áudio (MP3)", userData="audio")
-
-        self.lbl_conc = QLabel("Downloads simultâneos:")
-        self.spin_conc = QSpinBox()
-        self.spin_conc.setRange(1, 16)
-        self.spin_conc.setValue(3)
-
-        controls.addWidget(self.input_url, 3)
-        controls.addWidget(self.btn_add)
-        controls.addWidget(self.combo_kind)
-        controls.addWidget(self.lbl_conc)
-        controls.addWidget(self.spin_conc)
-
-        main.addLayout(controls)
-
-        # Linha 2 - Opções avançadas
-        adv_box = QGroupBox("Opções")
-        adv_form = QFormLayout(adv_box)
-
-        # Pasta destino
-        dest_layout = QHBoxLayout()
-        self.dest_dir_edit = QLineEdit(os.path.join(os.getcwd(), "downloads", "video"))
-        self.dest_dir_btn = QPushButton("Escolher pasta")
-        self.dest_dir_btn.setFixedWidth(140)
-        dest_layout.addWidget(self.dest_dir_edit, 1)
-        dest_layout.addWidget(self.dest_dir_btn, 0)
-        adv_form.addRow(QLabel("Pasta destino:"), dest_layout)
-
-        # Qualidade de vídeo
-        self.combo_quality = QComboBox()
-        self.combo_quality.addItem("Melhor (auto)", userData=None)
-        self.combo_quality.addItem("2160p (4K)", userData=2160)
-        self.combo_quality.addItem("1440p (2K)", userData=1440)
-        self.combo_quality.addItem("1080p (Full HD)", userData=1080)
-        self.combo_quality.addItem("720p (HD)", userData=720)
-        self.combo_quality.addItem("480p", userData=480)
-        self.combo_quality.addItem("360p", userData=360)
-        adv_form.addRow(QLabel("Qualidade de vídeo:"), self.combo_quality)
-
-        # Container de vídeo
-        self.combo_container = QComboBox()
-        self.combo_container.addItem("MP4 (compatível)", userData="mp4")
-        self.combo_container.addItem("MKV (ideal p/ legendas)", userData="mkv")
-        adv_form.addRow(QLabel("Formato do vídeo:"), self.combo_container)
-
-        # Qualidade de áudio (MP3)
-        self.combo_audio_quality = QComboBox()
-        for b in ["320", "256", "192", "160", "128"]:
-            self.combo_audio_quality.addItem(f"{b} kbps", userData=b)
-        adv_form.addRow(QLabel("Qualidade do MP3:"), self.combo_audio_quality)
-
-        # Legendas
-        self.chk_subs = QCheckBox("Baixar legendas")
-        self.edit_subs_langs = QLineEdit()
-        self.edit_subs_langs.setPlaceholderText("Ex.: pt,en")
-        subs_row = QHBoxLayout()
-        subs_row.addWidget(self.chk_subs)
-        subs_row.addWidget(QLabel("Idiomas:"))
-        subs_row.addWidget(self.edit_subs_langs)
-        adv_form.addRow(QLabel("Legendas:"), subs_row)
-
-        self.chk_embed_subs = QCheckBox("Incorporar legendas ao vídeo")
-        adv_form.addRow(QLabel("Legenda no arquivo:"), self.chk_embed_subs)
-
-        main.addWidget(adv_box)
-
-        # Linha 3 - Barra de ações
-        actions = QHBoxLayout()
-        self.btn_pause_all = QPushButton("Pausar todos")
-        self.btn_resume_all = QPushButton("Retomar todos")
-        self.btn_cancel_sel = QPushButton("Cancelar selecionados")
-        self.btn_open_folder = QPushButton("Abrir pasta de destino")
-        actions.addWidget(self.btn_pause_all)
-        actions.addWidget(self.btn_resume_all)
-        actions.addWidget(self.btn_cancel_sel)
-        actions.addStretch(1)
-        actions.addWidget(self.btn_open_folder)
-        main.addLayout(actions)
-
-        # Abas
-        tabs = QTabWidget()
-        main.addWidget(tabs, 1)
-
-        # Aba Downloads
-        tab_dl = QWidget()
-        dl_layout = QVBoxLayout(tab_dl)
         self.table = QTableWidget(0, 9)
         self.table.setHorizontalHeaderLabels([
             "Título/URL", "Tipo", "Qualidade", "Progresso", "Velocidade", "ETA", "Status", "Arquivo", "Ações"
@@ -152,46 +61,97 @@ class MainWindow(QMainWindow):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
-        dl_layout.addWidget(self.table)
-        tabs.addTab(tab_dl, "Downloads")
+        main.addWidget(self.table, 1)
 
-        # Aba Concluídos
-        tab_done = QWidget()
-        done_layout = QVBoxLayout(tab_done)
+        # Dock: Concluídos (flutuante)
+        self.dock_done = QDockWidget("Concluídos", self)
+        self.dock_done.setObjectName("dock_concluidos")
+        self.dock_done.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea | Qt.DockWidgetArea.LeftDockWidgetArea)
+        dock_inner = QWidget()
+        dock_layout = QVBoxLayout(dock_inner)
+        dock_layout.setContentsMargins(6, 6, 6, 6)
         self.list_done = QListWidget()
-        done_layout.addWidget(self.list_done)
-        tabs.addTab(tab_done, "Concluídos")
+        dock_layout.addWidget(self.list_done)
+        self.dock_done.setWidget(dock_inner)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dock_done)
+
+        # Toolbar
+        tb = QToolBar("Ações", self)
+        tb.setMovable(True)
+        self.addToolBar(tb)
+
+        self.act_new = QAction("Novo Download", self)
+        self.act_pause_all = QAction("Pausar todos", self)
+        self.act_resume_all = QAction("Retomar todos", self)
+        self.act_cancel_sel = QAction("Cancelar selecionados", self)
+        self.act_open_folder = QAction("Abrir pasta de downloads", self)
+
+        tb.addAction(self.act_new)
+        tb.addSeparator()
+        tb.addAction(self.act_pause_all)
+        tb.addAction(self.act_resume_all)
+        tb.addAction(self.act_cancel_sel)
+        tb.addSeparator()
+
+        # Concorrência como widgets embutidos
+        lbl_conc = QLabel("Concorrência:")
+        self.spin_conc = QSpinBox()
+        self.spin_conc.setRange(1, 16)
+        self.spin_conc.setValue(3)
+        w_conc = QWidget()
+        h_conc = QHBoxLayout(w_conc)
+        h_conc.setContentsMargins(0, 0, 0, 0)
+        h_conc.setSpacing(6)
+        h_conc.addWidget(lbl_conc)
+        h_conc.addWidget(self.spin_conc)
+        act_conc = QWidgetAction(self)
+        act_conc.setDefaultWidget(w_conc)
+        tb.addAction(act_conc)
+
+        tb.addSeparator()
+        tb.addAction(self.act_open_folder)
+
+        # Menu
+        menu_bar = self.menuBar()
+
+        m_file = menu_bar.addMenu("Arquivo")
+        self.act_export = QAction("Exportar fila...", self)
+        self.act_import = QAction("Importar fila...", self)
+        self.act_prefs = QAction("Preferências...", self)
+        m_file.addAction(self.act_export)
+        m_file.addAction(self.act_import)
+        m_file.addSeparator()
+        m_file.addAction(self.act_prefs)
+
+        m_view = menu_bar.addMenu("Exibir")
+        self.act_toggle_done = self.dock_done.toggleViewAction()
+        m_view.addAction(self.act_toggle_done)
+
+        m_help = menu_bar.addMenu("Ajuda")
+        about_action = QAction("Sobre", self)
+        m_help.addAction(about_action)
+        about_action.triggered.connect(self._show_about)
 
         # Status bar
         self.statusBar().showMessage("Pronto")
 
-        # Menu
-        menu_bar = self.menuBar()
-        m_file = menu_bar.addMenu("Arquivo")
-        self.act_export = QAction("Exportar fila...", self)
-        self.act_import = QAction("Importar fila...", self)
-        m_file.addAction(self.act_export)
-        m_file.addAction(self.act_import)
-
-        about_action = QAction("Sobre", self)
-        menu_bar.addAction(about_action)
-        about_action.triggered.connect(self._show_about)
-
-        # Visibilidade condicional de opções
-        self._refresh_options_visibility()
-
     def _connect_signals(self):
-        self.btn_add.clicked.connect(self.on_add_clicked)
-        self.btn_pause_all.clicked.connect(self.manager.pause_all)
-        self.btn_resume_all.clicked.connect(self.manager.resume_all)
-        self.btn_cancel_sel.clicked.connect(self.on_cancel_selected)
-        self.btn_open_folder.clicked.connect(self.on_open_folder)
-        self.dest_dir_btn.clicked.connect(self.on_pick_dir)
+        # Toolbar actions
+        self.act_new.triggered.connect(self.on_new_download)
+        self.act_pause_all.triggered.connect(self.manager.pause_all)
+        self.act_resume_all.triggered.connect(self.manager.resume_all)
+        self.act_cancel_sel.triggered.connect(self.on_cancel_selected)
+        self.act_open_folder.triggered.connect(self.on_open_folder)
+
+        # Concurrency
         self.spin_conc.valueChanged.connect(self.on_concurrency_changed)
-        self.combo_kind.currentIndexChanged.connect(self._refresh_options_visibility)
+
+        # Menu actions
         self.act_export.triggered.connect(self.on_export_queue)
         self.act_import.triggered.connect(self.on_import_queue)
+        self.act_prefs.triggered.connect(self.on_open_preferences)
 
+        # Manager signals
         s = self.manager.signals
         s.queued.connect(self.on_task_queued)
         s.meta.connect(self.on_task_meta)
@@ -208,41 +168,26 @@ class MainWindow(QMainWindow):
             "Apenas para fins educacionais. Respeite direitos autorais e os Termos de Serviço do YouTube."
         )
 
-    def _refresh_options_visibility(self):
-        kind = self.combo_kind.currentData()
-        is_video = (kind == "video")
-        self.combo_quality.setEnabled(is_video)
-        self.combo_container.setEnabled(is_video)
-        self.chk_subs.setEnabled(is_video)
-        self.edit_subs_langs.setEnabled(is_video and self.chk_subs.isChecked())
-        self.chk_embed_subs.setEnabled(is_video and self.chk_subs.isChecked())
-        self.combo_audio_quality.setEnabled(not is_video)
-        # Ajusta pasta default
-        if is_video and "video" not in self.dest_dir_edit.text():
-            self.dest_dir_edit.setText(os.path.join(os.getcwd(), "downloads", "video"))
-        if (not is_video) and "audio" not in self.dest_dir_edit.text():
-            self.dest_dir_edit.setText(os.path.join(os.getcwd(), "downloads", "audio"))
+    # Ações
 
     def on_concurrency_changed(self, n: int):
         self.manager.set_concurrency(n)
         self.statusBar().showMessage(f"Paralelismo ajustado para {n}")
 
-    def on_pick_dir(self):
-        d = QFileDialog.getExistingDirectory(self, "Escolher pasta de destino", self.dest_dir_edit.text().strip() or os.getcwd())
-        if d:
-            self.dest_dir_edit.setText(d)
-
     def on_open_folder(self):
-        path = self.dest_dir_edit.text().strip()
-        if not path or not os.path.isdir(path):
-            QMessageBox.warning(self, "Pasta inválida", "Selecione uma pasta de destino válida.")
-            return
+        # Abre a pasta base preferida (ex.: Documents/DownVid)
+        base = get_preferred_base_dir(self.defaults)
+        try:
+            os.makedirs(base, exist_ok=True)
+        except Exception:
+            pass
+
         if os.name == "nt":
-            os.startfile(path)
+            os.startfile(base)
         elif sys.platform == "darwin":
-            os.system(f'open "{path}"')
+            os.system(f'open "{base}"')
         else:
-            os.system(f'xdg-open "{path}"')
+            os.system(f'xdg-open "{base}"')
 
     def on_cancel_selected(self):
         rows = set([i.row() for i in self.table.selectedIndexes()])
@@ -258,47 +203,51 @@ class MainWindow(QMainWindow):
         self.manager.cancel_selected(ids)
         self._persist_state()
 
-    def _collect_urls_from_input(self) -> List[str]:
-        raw = self.input_url.toPlainText()
-        lines = [s.strip() for s in raw.splitlines() if s.strip()]
-        if not lines and raw.strip():
-            lines = [raw.strip()]
-        return lines
+    def on_new_download(self):
+        dlg = AddDownloadDialog(self, defaults=self.defaults)
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return
 
-    def on_add_clicked(self):
-        lines = self._collect_urls_from_input()
-        if not lines:
+        urls = dlg.get_urls()
+        if not urls:
             QMessageBox.warning(self, "URL vazia", "Cole pelo menos uma URL de vídeo ou playlist do YouTube.")
             return
 
-        kind = self.combo_kind.currentData()
-        dest_dir = self.dest_dir_edit.text().strip() or os.getcwd()
-
-        quality_height = self.combo_quality.currentData()
-        audio_quality = self.combo_audio_quality.currentData()
-        subs_langs = None
-        if self.chk_subs.isChecked():
-            langs = self.edit_subs_langs.text().strip()
-            if langs:
-                subs_langs = [p.strip() for p in langs.split(",") if p.strip()]
-        embed_subs = bool(self.chk_embed_subs.isChecked())
-        container = self.combo_container.currentData()
-
+        opts = dlg.get_options()
         added_count = 0
-        for line in lines:
+        for u in urls:
             tasks = self.manager.add_url(
-                line,
-                kind=kind,
-                dest_dir=dest_dir,
-                quality_height=quality_height,
-                audio_quality=audio_quality,
-                subs_langs=subs_langs,
-                embed_subs=embed_subs,
-                container=container,
+                u,
+                kind=opts["kind"],
+                dest_dir=opts["dest_dir"],
+                quality_height=opts["quality_height"],
+                audio_quality=opts["audio_quality"],
+                subs_langs=opts["subs_langs"],
+                embed_subs=opts["embed_subs"],
+                container=opts["container"],
             )
             added_count += len(tasks)
         self.statusBar().showMessage(f"Adicionados {added_count} itens à fila.")
         self._persist_state()
+
+        # Atualiza defaults se usuário mudou de pasta no diálogo
+        if opts["kind"] == "video":
+            self.defaults["video_dir"] = opts["dest_dir"]
+        else:
+            self.defaults["audio_dir"] = opts["dest_dir"]
+        ensure_dirs_for_defaults(self.defaults)
+        self._persist_state()
+
+    def on_open_preferences(self):
+        dlg = PreferencesDialog(self, defaults=self.defaults.copy())
+        if dlg.exec() == dlg.DialogCode.Accepted:
+            new_defaults = dlg.get_defaults()
+            self.defaults.update(new_defaults)
+            ensure_dirs_for_defaults(self.defaults)
+            self._persist_state()
+            self.statusBar().showMessage("Preferências atualizadas.")
+
+    # Sinais do Manager
 
     def on_task_queued(self, task_id: str):
         task = self.manager.tasks.get(task_id)
@@ -390,7 +339,6 @@ class MainWindow(QMainWindow):
         sitem = self.table.item(row, 6)
         if sitem:
             sitem.setText(data.get("status", ""))
-        # Evita I/O excessivo: persistimos no fim/erro
 
     def on_task_status(self, task_id: str, status: str):
         row = self._task_row.get(task_id)
@@ -414,10 +362,9 @@ class MainWindow(QMainWindow):
         if aitem and filepath:
             aitem.setText(filepath)
 
-        # Atualiza aba "Concluídos"
+        # Atualiza dock "Concluídos"
         text = filepath if filepath else (self.table.item(row, 0).text() if self.table.item(row, 0) else "")
         self.list_done.addItem(QListWidgetItem(text))
-        self._completed.append(text)
         self._persist_state()
 
     def on_task_error(self, task_id: str, message: str):
@@ -435,8 +382,10 @@ class MainWindow(QMainWindow):
             self.table.removeRow(row)
         self._persist_state()
 
+    # Exportar/Importar e Estado
+
     def on_export_queue(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Exportar fila", os.path.join(os.getcwd(), "fila.json"), "JSON (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, "Exportar fila", os.path.join(get_preferred_base_dir(self.defaults), "fila.json"), "JSON (*.json)")
         if not path:
             return
         data = self._compose_state(include_completed=True)
@@ -448,7 +397,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Erro ao exportar", f"Falha ao salvar arquivo: {e!r}")
 
     def on_import_queue(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Importar fila", os.getcwd(), "JSON (*.json)")
+        start_dir = get_preferred_base_dir(self.defaults)
+        path, _ = QFileDialog.getOpenFileName(self, "Importar fila", start_dir, "JSON (*.json)")
         if not path:
             return
         try:
@@ -459,12 +409,20 @@ class MainWindow(QMainWindow):
             return
 
         queue = (data or {}).get("queue", [])
+        # Restaura defaults se presentes
+        defaults = (data or {}).get("defaults")
+        if isinstance(defaults, dict):
+            self.defaults.update(defaults)
+            ensure_dirs_for_defaults(self.defaults)
+
         added = 0
         for item in queue:
+            kind = item.get("kind", "video")
+            dest = item.get("dest_dir") or (self.defaults["video_dir"] if kind == "video" else self.defaults["audio_dir"])
             tasks = self.manager.add_url(
                 item.get("url", ""),
-                kind=item.get("kind", "video"),
-                dest_dir=item.get("dest_dir") or os.getcwd(),
+                kind=kind,
+                dest_dir=dest,
                 quality_height=item.get("quality_height"),
                 audio_quality=item.get("audio_quality") or "320",
                 subs_langs=item.get("subs_langs"),
@@ -491,7 +449,11 @@ class MainWindow(QMainWindow):
                     "container": t.container,
                     "title": t.title,
                 })
-        state = {"version": 1, "queue": queue}
+        state = {
+            "version": 2,
+            "queue": queue,
+            "defaults": self.defaults,
+        }
         if include_completed:
             completed = []
             for i in range(self.list_done.count()):
@@ -506,6 +468,11 @@ class MainWindow(QMainWindow):
             pass
 
     def _restore_previous_state(self, previous_state: Optional[dict]):
+        # Defaults
+        if previous_state and isinstance(previous_state.get("defaults"), dict):
+            self.defaults.update(previous_state["defaults"])
+            ensure_dirs_for_defaults(self.defaults)
+
         # Restaurar concluídos
         if previous_state and previous_state.get("completed"):
             for text in previous_state["completed"]:
@@ -525,10 +492,12 @@ class MainWindow(QMainWindow):
             if ret == QMessageBox.StandardButton.Yes:
                 added = 0
                 for item in queue:
+                    kind = item.get("kind", "video")
+                    dest = item.get("dest_dir") or (self.defaults["video_dir"] if kind == "video" else self.defaults["audio_dir"])
                     tasks = self.manager.add_url(
                         item.get("url", ""),
-                        kind=item.get("kind", "video"),
-                        dest_dir=item.get("dest_dir") or os.getcwd(),
+                        kind=kind,
+                        dest_dir=dest,
                         quality_height=item.get("quality_height"),
                         audio_quality=item.get("audio_quality") or "320",
                         subs_langs=item.get("subs_langs"),
